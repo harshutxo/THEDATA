@@ -1,0 +1,869 @@
+import streamlit as st
+import json
+import os
+from web3 import Web3
+from web3.middleware import geth_poa_middleware
+from eth_account import Account
+from dotenv import load_dotenv
+import hashlib
+import datetime
+
+# Load environment variables
+load_dotenv()
+
+# App title and configuration
+st.set_page_config(page_title="Blockchain Cloud Data Storage", page_icon="☁️", layout="wide")
+
+# Contract ABI and address
+CONTRACT_ABI = json.loads('''
+[
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "owner",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "user",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "bytes32",
+                "name": "entryId",
+                "type": "bytes32"
+            }
+        ],
+        "name": "DataAccessGranted",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "owner",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "user",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "bytes32",
+                "name": "entryId",
+                "type": "bytes32"
+            }
+        ],
+        "name": "DataAccessRevoked",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "owner",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "bytes32",
+                "name": "entryId",
+                "type": "bytes32"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "timestamp",
+                "type": "uint256"
+            }
+        ],
+        "name": "DataDeleted",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "owner",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "bytes32",
+                "name": "entryId",
+                "type": "bytes32"
+            },
+            {
+                "indexed": false,
+                "internalType": "string",
+                "name": "storageProvider",
+                "type": "string"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "timestamp",
+                "type": "uint256"
+            }
+        ],
+        "name": "DataStored",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "owner",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "bytes32",
+                "name": "entryId",
+                "type": "bytes32"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "timestamp",
+                "type": "uint256"
+            }
+        ],
+        "name": "DataUpdated",
+        "type": "event"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_entryId",
+                "type": "bytes32"
+            }
+        ],
+        "name": "deleteData",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_entryId",
+                "type": "bytes32"
+            },
+            {
+                "internalType": "address",
+                "name": "_user",
+                "type": "address"
+            }
+        ],
+        "name": "grantAccess",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_entryId",
+                "type": "bytes32"
+            },
+            {
+                "internalType": "address",
+                "name": "_user",
+                "type": "address"
+            }
+        ],
+        "name": "revokeAccess",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_entryId",
+                "type": "bytes32"
+            },
+            {
+                "internalType": "bool",
+                "name": "_isPrivate",
+                "type": "bool"
+            }
+        ],
+        "name": "setPrivacy",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "string",
+                "name": "_dataId",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "_dataHash",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "_storageProvider",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "_location",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "_encryptionKey",
+                "type": "string"
+            },
+            {
+                "internalType": "bool",
+                "name": "_isPrivate",
+                "type": "bool"
+            }
+        ],
+        "name": "storeData",
+        "outputs": [
+            {
+                "internalType": "bytes32",
+                "name": "entryId",
+                "type": "bytes32"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_entryId",
+                "type": "bytes32"
+            },
+            {
+                "internalType": "string",
+                "name": "_dataHash",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "_location",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "_encryptionKey",
+                "type": "string"
+            }
+        ],
+        "name": "updateData",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_entryId",
+                "type": "bytes32"
+            },
+            {
+                "internalType": "address",
+                "name": "_user",
+                "type": "address"
+            }
+        ],
+        "name": "hasAccess",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_entryId",
+                "type": "bytes32"
+            }
+        ],
+        "name": "getDataDetails",
+        "outputs": [
+            {
+                "internalType": "string",
+                "name": "dataHash",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "location",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "encryptionKey",
+                "type": "string"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_entryId",
+                "type": "bytes32"
+            }
+        ],
+        "name": "getDataInfo",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "owner",
+                "type": "address"
+            },
+            {
+                "internalType": "string",
+                "name": "dataId",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "storageProvider",
+                "type": "string"
+            },
+            {
+                "internalType": "uint256",
+                "name": "timestamp",
+                "type": "uint256"
+            },
+            {
+                "internalType": "bool",
+                "name": "isPrivate",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_user",
+                "type": "address"
+            }
+        ],
+        "name": "getUserDataIds",
+        "outputs": [
+            {
+                "internalType": "bytes32[]",
+                "name": "",
+                "type": "bytes32[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+''')
+
+# Default contract address - should be replaced with your deployed contract address
+DEFAULT_CONTRACT_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+# Connect to blockchain (default to local ganache, but can be changed in settings)
+@st.cache_resource
+def get_web3_connection(rpc_url):
+    web3 = Web3(Web3.HTTPProvider(rpc_url))
+    # Add middleware for compatibility with networks like Polygon, BSC, etc.
+    web3.middleware_onion.inject(geth_poa_middleware, layer=0)
+    return web3
+
+# Initialize session state
+def init_session_state():
+    if 'connected' not in st.session_state:
+        st.session_state.connected = False
+    if 'account' not in st.session_state:
+        st.session_state.account = None
+    if 'contract' not in st.session_state:
+        st.session_state.contract = None
+    if 'web3' not in st.session_state:
+        st.session_state.web3 = None
+    if 'data_entries' not in st.session_state:
+        st.session_state.data_entries = []
+    if 'active_tab' not in st.session_state:
+        st.session_state.active_tab = "Store Data"
+
+# Function to compute hash of a file or text
+def compute_hash(data):
+    return hashlib.sha256(data.encode('utf-8')).hexdigest()
+
+# Function to connect wallet
+def connect_wallet(private_key):
+    try:
+        account = Account.from_key(private_key)
+        st.session_state.account = account
+        st.session_state.connected = True
+        # Load user data after connecting
+        load_user_data()
+        return True
+    except Exception as e:
+        st.error(f"Failed to connect wallet: {str(e)}")
+        return False
+
+# Function to load contract
+def load_contract(address):
+    try:
+        contract = st.session_state.web3.eth.contract(address=address, abi=CONTRACT_ABI)
+        st.session_state.contract = contract
+        return True
+    except Exception as e:
+        st.error(f"Failed to load contract: {str(e)}")
+        return False
+
+# Function to load user data from the contract
+def load_user_data():
+    try:
+        if st.session_state.connected and st.session_state.contract:
+            user_address = st.session_state.account.address
+            data_ids = st.session_state.contract.functions.getUserDataIds(user_address).call()
+            
+            entries = []
+            for entry_id in data_ids:
+                try:
+                    # Get basic info about the data
+                    owner, data_id, provider, timestamp, is_private = st.session_state.contract.functions.getDataInfo(entry_id).call()
+                    
+                    # Try to get detailed info (may fail if not authorized)
+                    try:
+                        data_hash, location, encryption_key = st.session_state.contract.functions.getDataDetails(entry_id).call({'from': user_address})
+                    except Exception:
+                        data_hash = "Access denied"
+                        location = "Access denied"
+                        encryption_key = "Access denied"
+                    
+                    # Convert timestamp to readable date
+                    date = datetime.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    entries.append({
+                        'id': entry_id.hex(),
+                        'data_id': data_id,
+                        'owner': owner,
+                        'provider': provider,
+                        'timestamp': timestamp,
+                        'date': date,
+                        'is_private': is_private,
+                        'hash': data_hash,
+                        'location': location,
+                        'encryption_key': encryption_key
+                    })
+                except Exception as e:
+                    st.warning(f"Could not load data for entry ID {entry_id.hex()}: {str(e)}")
+            
+            st.session_state.data_entries = entries
+    except Exception as e:
+        st.error(f"Failed to load user data: {str(e)}")
+
+# Function to store data in the contract
+def store_data(data_id, storage_provider, location, encryption_key, is_private, data_to_hash):
+    try:
+        # Compute hash of the data
+        data_hash = compute_hash(data_to_hash)
+        
+        # Prepare transaction
+        tx = st.session_state.contract.functions.storeData(
+            data_id,
+            data_hash,
+            storage_provider,
+            location,
+            encryption_key,
+            is_private
+        ).build_transaction({
+            'from': st.session_state.account.address,
+            'nonce': st.session_state.web3.eth.get_transaction_count(st.session_state.account.address),
+            'gas': 3000000,
+            'gasPrice': st.session_state.web3.eth.gas_price
+        })
+        
+        # Sign and send transaction
+        signed_tx = st.session_state.web3.eth.account.sign_transaction(tx, st.session_state.account.key)
+        tx_hash = st.session_state.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        # Wait for transaction receipt
+        receipt = st.session_state.web3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        # Reload user data
+        load_user_data()
+        
+        return True, receipt.transactionHash.hex()
+    except Exception as e:
+        return False, str(e)
+
+# Function to update data
+def update_data(entry_id, data_hash, location, encryption_key):
+    try:
+        # Prepare transaction
+        tx = st.session_state.contract.functions.updateData(
+            bytes.fromhex(entry_id.replace('0x', '')),
+            data_hash,
+            location,
+            encryption_key
+        ).build_transaction({
+            'from': st.session_state.account.address,
+            'nonce': st.session_state.web3.eth.get_transaction_count(st.session_state.account.address),
+            'gas': 3000000,
+            'gasPrice': st.session_state.web3.eth.gas_price
+        })
+        
+        # Sign and send transaction
+        signed_tx = st.session_state.web3.eth.account.sign_transaction(tx, st.session_state.account.key)
+        tx_hash = st.session_state.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        # Wait for transaction receipt
+        receipt = st.session_state.web3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        # Reload user data
+        load_user_data()
+        
+        return True, receipt.transactionHash.hex()
+    except Exception as e:
+        return False, str(e)
+
+# Function to delete data
+def delete_data(entry_id):
+    try:
+        # Prepare transaction
+        tx = st.session_state.contract.functions.deleteData(
+            bytes.fromhex(entry_id.replace('0x', ''))
+        ).build_transaction({
+            'from': st.session_state.account.address,
+            'nonce': st.session_state.web3.eth.get_transaction_count(st.session_state.account.address),
+            'gas': 3000000,
+            'gasPrice': st.session_state.web3.eth.gas_price
+        })
+        
+        # Sign and send transaction
+        signed_tx = st.session_state.web3.eth.account.sign_transaction(tx, st.session_state.account.key)
+        tx_hash = st.session_state.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        # Wait for transaction receipt
+        receipt = st.session_state.web3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        # Reload user data
+        load_user_data()
+        
+        return True, receipt.transactionHash.hex()
+    except Exception as e:
+        return False, str(e)
+
+# Function to grant access
+def grant_access(entry_id, user_address):
+    try:
+        # Prepare transaction
+        tx = st.session_state.contract.functions.grantAccess(
+            bytes.fromhex(entry_id.replace('0x', '')),
+            user_address
+        ).build_transaction({
+            'from': st.session_state.account.address,
+            'nonce': st.session_state.web3.eth.get_transaction_count(st.session_state.account.address),
+            'gas': 3000000,
+            'gasPrice': st.session_state.web3.eth.gas_price
+        })
+        
+        # Sign and send transaction
+        signed_tx = st.session_state.web3.eth.account.sign_transaction(tx, st.session_state.account.key)
+        tx_hash = st.session_state.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        # Wait for transaction receipt
+        receipt = st.session_state.web3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return True, receipt.transactionHash.hex()
+    except Exception as e:
+        return False, str(e)
+
+# Function to revoke access
+def revoke_access(entry_id, user_address):
+    try:
+        # Prepare transaction
+        tx = st.session_state.contract.functions.revokeAccess(
+            bytes.fromhex(entry_id.replace('0x', '')),
+            user_address
+        ).build_transaction({
+            'from': st.session_state.account.address,
+            'nonce': st.session_state.web3.eth.get_transaction_count(st.session_state.account.address),
+            'gas': 3000000,
+            'gasPrice': st.session_state.web3.eth.gas_price
+        })
+        
+        # Sign and send transaction
+        signed_tx = st.session_state.web3.eth.account.sign_transaction(tx, st.session_state.account.key)
+        tx_hash = st.session_state.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        # Wait for transaction receipt
+        receipt = st.session_state.web3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return True, receipt.transactionHash.hex()
+    except Exception as e:
+        return False, str(e)
+
+# Function to toggle privacy
+def toggle_privacy(entry_id, is_private):
+    try:
+        # Prepare transaction
+        tx = st.session_state.contract.functions.setPrivacy(
+            bytes.fromhex(entry_id.replace('0x', '')),
+            is_private
+        ).build_transaction({
+            'from': st.session_state.account.address,
+            'nonce': st.session_state.web3.eth.get_transaction_count(st.session_state.account.address),
+            'gas': 3000000,
+            'gasPrice': st.session_state.web3.eth.gas_price
+        })
+        
+        # Sign and send transaction
+        signed_tx = st.session_state.web3.eth.account.sign_transaction(tx, st.session_state.account.key)
+        tx_hash = st.session_state.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        # Wait for transaction receipt
+        receipt = st.session_state.web3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        # Reload user data
+        load_user_data()
+        
+        return True, receipt.transactionHash.hex()
+    except Exception as e:
+        return False, str(e)
+
+# Function to check if a user has access to a data entry
+def check_access(entry_id, user_address):
+    try:
+        has_access = st.session_state.contract.functions.hasAccess(
+            bytes.fromhex(entry_id.replace('0x', '')),
+            user_address
+        ).call()
+        
+        return has_access
+    except Exception as e:
+        st.error(f"Failed to check access: {str(e)}")
+        return False
+
+# Main application
+def main():
+    init_session_state()
+
+    st.title("☁️ Blockchain Cloud Data Registry")
+    
+    # Sidebar for connection settings
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        
+        rpc_url = st.text_input("Blockchain RPC URL", value="http://127.0.0.1:8545")
+        contract_address = st.text_input("Contract Address", value=DEFAULT_CONTRACT_ADDRESS)
+        
+        if st.button("Connect to Blockchain"):
+            st.session_state.web3 = get_web3_connection(rpc_url)
+            if st.session_state.web3.is_connected():
+                st.success(f"Connected to blockchain at {rpc_url}")
+                if load_contract(contract_address):
+                    st.success(f"Contract loaded at {contract_address}")
+            else:
+                st.error(f"Failed to connect to {rpc_url}")
+        
+        st.divider()
+        
+        # Wallet connection
+        st.subheader("🔑 Connect Wallet")
+        private_key = st.text_input("Private Key", type="password")
+        
+        if st.button("Connect Wallet"):
+            if connect_wallet(private_key):
+                st.success(f"Wallet connected: {st.session_state.account.address}")
+            else:
+                st.error("Failed to connect wallet")
+        
+        # Show account information if connected
+        if st.session_state.connected:
+            st.success(f"Connected: {st.session_state.account.address[:6]}...{st.session_state.account.address[-4:]}")
+            
+            if st.session_state.web3:
+                try:
+                    balance = st.session_state.web3.eth.get_balance(st.session_state.account.address)
+                    balance_eth = st.session_state.web3.from_wei(balance, 'ether')
+                    st.info(f"Balance: {balance_eth:.4f} ETH")
+                except Exception as e:
+                    st.warning(f"Could not fetch balance: {str(e)}")
+
+    # Main content
+    if not st.session_state.connected or not st.session_state.contract:
+        st.info("Please connect your wallet and load the contract using the sidebar.")
+        return
+    
+    # Tabs for different functionalities
+    tab1, tab2, tab3, tab4 = st.tabs(["Store Data", "My Data", "Access Control", "Settings"])
+    
+    # Store Data Tab
+    with tab1:
+        st.header("📤 Store Cloud Data Reference")
+        
+        data_id = st.text_input("Data Identifier (e.g., filename)", key="data_id")
+        storage_provider = st.selectbox("Storage Provider", ["AWS S3", "Google Cloud Storage", "Azure Blob", "IPFS", "Other"], key="provider")
+        
+        # For 'Other' provider, allow custom input
+        if storage_provider == "Other":
+            storage_provider = st.text_input("Custom Provider Name", key="custom_provider")
+        
+        location = st.text_input("Storage Location (URL/URI/Path)", key="location")
+        encryption_key = st.text_input("Encryption Key Reference (leave blank if none)", key="enc_key")
+        is_private = st.checkbox("Private (requires access control)", value=True, key="is_private")
+        
+        # Data to hash (simulating the actual data or its content)
+        st.subheader("Data Content (for hash generation)")
+        hash_option = st.radio("Hash Source", ["File Upload", "Direct Input"], key="hash_option")
+        
+        if hash_option == "File Upload":
+            uploaded_file = st.file_uploader("Upload file to generate hash", key="file_upload")
+            if uploaded_file:
+                data_to_hash = uploaded_file.getvalue().decode('utf-8', errors='replace')
+                st.success(f"File loaded: {uploaded_file.name}")
+            else:
+                data_to_hash = ""
+        else:
+            data_to_hash = st.text_area("Enter data content for hashing", key="data_content")
+        
+        if st.button("Store Data Reference") and data_id and storage_provider and location:
+            with st.spinner("Storing data on blockchain..."):
+                success, result = store_data(data_id, storage_provider, location, encryption_key, is_private, data_to_hash)
+                
+                if success:
+                    st.success(f"Data reference stored successfully! Transaction: {result}")
+                else:
+                    st.error(f"Failed to store data: {result}")
+    
+    # My Data Tab
+    with tab2:
+        st.header("📋 My Data Entries")
+        
+        if st.button("Refresh Data"):
+            with st.spinner("Loading data..."):
+                load_user_data()
+        
+        if not st.session_state.data_entries:
+            st.info("No data entries found. Store some data first!")
+        else:
+            # Display data entries in an expander for each entry
+            for idx, entry in enumerate(st.session_state.data_entries):
+                with st.expander(f"{entry['data_id']} ({entry['provider']})"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown(f"**ID:** `{entry['id']}`")
+                        st.markdown(f"**Owner:** `{entry['owner']}`")
+                        st.markdown(f"**Provider:** {entry['provider']}")
+                        st.markdown(f"**Date:** {entry['date']}")
+                        st.markdown(f"**Private:** {'Yes' if entry['is_private'] else 'No'}")
+                    
+                    with col2:
+                        st.markdown(f"**Hash:** `{entry['hash']}`")
+                        st.markdown(f"**Location:** {entry['location']}")
+                        if entry['encryption_key']:
+                            st.markdown(f"**Encryption Key:** `{entry['encryption_key']}`")
+                    
+                    # Actions
+                    st.divider()
+                    action_col1, action_col2, action_col3 = st.columns(3)
+                    
+                    with action_col1:
+                        if st.button("Update", key=f"update_{idx}"):
+                            st.session_state.active_tab = "update"
+                            st.session_state.update_entry_id = entry['id']
+                            st.session_state.update_location = entry['location']
+                            st.session_state.update_enc_key = entry['encryption_key']
+                            st.session_state.update_hash = entry['hash']
+                            st.experimental_rerun()
+                    
+                    with action_col2:
+                        privacy_label = "Make Public" if entry['is_private'] else "Make Private"
+                        if st.button(privacy_label, key=f"privacy_{idx}"):
+                            with st.spinner("Updating privacy setting..."):
+                                success, result = toggle_privacy(entry['id'], not entry['is_private'])
+                                if success:
+                                    st.success(f"Privacy setting updated. Transaction: {result}")
+                                else:
+                                    st.error(f"Failed to update privacy: {result}")
+                    
+                    with action_col3:
+                        if st.button("Delete", key=f"delete_{idx}"):
+                            if st.checkbox(f"Confirm deletion of {entry['data_id']}?", key=f"confirm_delete_{idx}"):
+                                with st.spinner("Deleting data reference..."):
+                                    success, result = delete_data(entry['id'])
+                                    if success:
+                                        st.success(f"Data deleted. Transaction: {result}")
+                                    else:
+                                        st.error(f"Failed to delete data: {result}")
+    
+    # Access Control Tab
+    with tab3:
+        st.header("🔒 Access Control")
+        
+        st.subheader("Manage Access Permissions")
+        
+        # Select data entry
+        if not st.session_state.data_entries:
+            st.info("No data entries found. Store some data first!")
+        else:
+            data_options = {f"{entry['data_id']} ({entry['provider']})": entry['id'] for entry in st.session_state.data_entries}
+            selected_data = st.selectbox("Select Data Entry", list(data_options.keys()), key="access_data_select")
+            selected_entry_id = data_options[selected_data]
+            
+            st.divider()
+            
+            # Grant access
+            st.subheader("Grant Access")
+            user_address = st.text_input("User Address (0x...)", key="grant_user_address")
+            
+            if st.button("Grant Access") and user_address:
+                with st.spinner("Granting access..."):
+                    success, result = grant_access(selected_entry_id, user_address)
+                    if success:
+                        st.success(f"Access granted to {user_address}. Transaction: {result}")
+                    else:
+                        st.error(f"Failed to grant access: {result}")
+            
+            st.divider()
+            
+            # Revoke access
+            st.subheader("Revoke Access")
+            rev
