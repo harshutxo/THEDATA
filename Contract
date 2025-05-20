@@ -1,0 +1,249 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+/**
+ * @title CloudDataStorage
+ * @dev A contract for storing references to cloud data storage and managing permissions
+ */
+contract CloudDataStorage {
+    // Data structure to store details about cloud data
+    struct DataEntry {
+        address owner; // Owner of the data
+        string dataId; // Unique identifier for the data in the cloud service
+        string dataHash; // Hash of the data for integrity verification
+        string storageProvider; // AWS, Google Cloud, etc.
+        string location; // URI or path where the data is stored
+        string encryptionKey; // Encrypted encryption key (IPFS hash or other reference)
+        uint256 timestamp; // When the data was stored
+        bool isPrivate; // Privacy flag
+        mapping(address => bool) authorizedUsers; // Users with access permission
+    }
+
+    // Maps data ID to DataEntry
+    mapping(bytes32 => DataEntry) private dataRegistry;
+    
+    // Maps user addresses to their data IDs
+    mapping(address => bytes32[]) private userDataIds;
+    
+    // Events
+    event DataStored(address indexed owner, bytes32 indexed entryId, string storageProvider, uint256 timestamp);
+    event DataAccessGranted(address indexed owner, address indexed user, bytes32 indexed entryId);
+    event DataAccessRevoked(address indexed owner, address indexed user, bytes32 indexed entryId);
+    event DataUpdated(address indexed owner, bytes32 indexed entryId, uint256 timestamp);
+    event DataDeleted(address indexed owner, bytes32 indexed entryId, uint256 timestamp);
+
+    /**
+     * @dev Store a new data entry reference
+     * @param _dataId Unique identifier for the data
+     * @param _dataHash Hash of the data for integrity verification
+     * @param _storageProvider Cloud provider (AWS, Google Cloud, etc.)
+     * @param _location URI or path where data is stored
+     * @param _encryptionKey Reference to the encryption key
+     * @param _isPrivate Whether the data is private
+     * @return entryId The unique ID for this data entry in the contract
+     */
+    function storeData(
+        string memory _dataId,
+        string memory _dataHash,
+        string memory _storageProvider,
+        string memory _location,
+        string memory _encryptionKey,
+        bool _isPrivate
+    ) public returns (bytes32 entryId) {
+        // Create a unique ID for this entry based on sender and data ID
+        entryId = keccak256(abi.encodePacked(msg.sender, _dataId, block.timestamp));
+        
+        // Ensure this ID doesn't already exist
+        require(dataRegistry[entryId].owner == address(0), "Data ID already exists");
+        
+        // Store the data entry
+        DataEntry storage newEntry = dataRegistry[entryId];
+        newEntry.owner = msg.sender;
+        newEntry.dataId = _dataId;
+        newEntry.dataHash = _dataHash;
+        newEntry.storageProvider = _storageProvider;
+        newEntry.location = _location;
+        newEntry.encryptionKey = _encryptionKey;
+        newEntry.timestamp = block.timestamp;
+        newEntry.isPrivate = _isPrivate;
+        
+        // Add entry ID to user's data IDs
+        userDataIds[msg.sender].push(entryId);
+        
+        // Owner is always authorized
+        newEntry.authorizedUsers[msg.sender] = true;
+        
+        // Emit event
+        emit DataStored(msg.sender, entryId, _storageProvider, block.timestamp);
+        
+        return entryId;
+    }
+
+    /**
+     * @dev Grant access to another user
+     * @param _entryId The ID of the data entry
+     * @param _user Address of the user to authorize
+     */
+    function grantAccess(bytes32 _entryId, address _user) public {
+        require(dataRegistry[_entryId].owner == msg.sender, "Only owner can grant access");
+        require(_user != address(0), "Invalid user address");
+        
+        dataRegistry[_entryId].authorizedUsers[_user] = true;
+        
+        emit DataAccessGranted(msg.sender, _user, _entryId);
+    }
+
+    /**
+     * @dev Revoke access from a user
+     * @param _entryId The ID of the data entry
+     * @param _user Address of the user to revoke access from
+     */
+    function revokeAccess(bytes32 _entryId, address _user) public {
+        require(dataRegistry[_entryId].owner == msg.sender, "Only owner can revoke access");
+        require(_user != address(0), "Invalid user address");
+        
+        dataRegistry[_entryId].authorizedUsers[_user] = false;
+        
+        emit DataAccessRevoked(msg.sender, _user, _entryId);
+    }
+
+    /**
+     * @dev Check if a user has access to a data entry
+     * @param _entryId The ID of the data entry
+     * @param _user Address of the user
+     * @return bool Whether the user has access
+     */
+    function hasAccess(bytes32 _entryId, address _user) public view returns (bool) {
+        DataEntry storage entry = dataRegistry[_entryId];
+        
+        // If data is not private, anyone can access
+        if (!entry.isPrivate) {
+            return true;
+        }
+        
+        // Check if user is authorized
+        return entry.authorizedUsers[_user];
+    }
+
+    /**
+     * @dev Update data entry information
+     * @param _entryId The ID of the data entry
+     * @param _dataHash New hash of the data
+     * @param _location New URI or path
+     * @param _encryptionKey New encryption key reference
+     */
+    function updateData(
+        bytes32 _entryId,
+        string memory _dataHash,
+        string memory _location,
+        string memory _encryptionKey
+    ) public {
+        require(dataRegistry[_entryId].owner == msg.sender, "Only owner can update data");
+        
+        DataEntry storage entry = dataRegistry[_entryId];
+        
+        entry.dataHash = _dataHash;
+        entry.location = _location;
+        entry.encryptionKey = _encryptionKey;
+        entry.timestamp = block.timestamp;
+        
+        emit DataUpdated(msg.sender, _entryId, block.timestamp);
+    }
+
+    /**
+     * @dev Toggle privacy status of data
+     * @param _entryId The ID of the data entry
+     * @param _isPrivate New privacy status
+     */
+    function setPrivacy(bytes32 _entryId, bool _isPrivate) public {
+        require(dataRegistry[_entryId].owner == msg.sender, "Only owner can change privacy settings");
+        
+        dataRegistry[_entryId].isPrivate = _isPrivate;
+    }
+
+    /**
+     * @dev Delete a data entry
+     * @param _entryId The ID of the data entry
+     */
+    function deleteData(bytes32 _entryId) public {
+        require(dataRegistry[_entryId].owner == msg.sender, "Only owner can delete data");
+        
+        // Remove entry ID from user's data IDs
+        bytes32[] storage userEntries = userDataIds[msg.sender];
+        for (uint i = 0; i < userEntries.length; i++) {
+            if (userEntries[i] == _entryId) {
+                // Replace with the last element and pop
+                userEntries[i] = userEntries[userEntries.length - 1];
+                userEntries.pop();
+                break;
+            }
+        }
+        
+        // Delete the entry (note this only clears value types, not mappings)
+        emit DataDeleted(msg.sender, _entryId, block.timestamp);
+        
+        // Need to manually clear mappings in future versions
+        delete dataRegistry[_entryId];
+    }
+
+    /**
+     * @dev Get basic information about a data entry
+     * @param _entryId The ID of the data entry
+     * @return owner Address of the data owner
+     * @return dataId Unique identifier for the data
+     * @return storageProvider Cloud provider name
+     * @return timestamp When the data was stored/updated
+     * @return isPrivate Whether the data is private
+     */
+    function getDataInfo(bytes32 _entryId) public view returns (
+        address owner,
+        string memory dataId,
+        string memory storageProvider,
+        uint256 timestamp,
+        bool isPrivate
+    ) {
+        DataEntry storage entry = dataRegistry[_entryId];
+        return (
+            entry.owner,
+            entry.dataId,
+            entry.storageProvider,
+            entry.timestamp,
+            entry.isPrivate
+        );
+    }
+
+    /**
+     * @dev Get detailed information about a data entry (only for authorized users)
+     * @param _entryId The ID of the data entry
+     * @return dataHash Hash of the data
+     * @return location URI or path where data is stored
+     * @return encryptionKey Reference to the encryption key
+     */
+    function getDataDetails(bytes32 _entryId) public view returns (
+        string memory dataHash,
+        string memory location,
+        string memory encryptionKey
+    ) {
+        DataEntry storage entry = dataRegistry[_entryId];
+        
+        require(
+            !entry.isPrivate || entry.authorizedUsers[msg.sender],
+            "Not authorized to access this data"
+        );
+        
+        return (
+            entry.dataHash,
+            entry.location,
+            entry.encryptionKey
+        );
+    }
+
+    /**
+     * @dev Get all data IDs owned by a user
+     * @param _user Address of the user
+     * @return Array of data entry IDs
+     */
+    function getUserDataIds(address _user) public view returns (bytes32[] memory) {
+        return userDataIds[_user];
+    }
+}
